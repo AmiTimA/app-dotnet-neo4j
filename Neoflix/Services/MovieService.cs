@@ -46,6 +46,9 @@ namespace Neoflix.Services
             // Execute a query in a new Read Transaction.
             return await session.ExecuteReadAsync(async tx =>
             {
+                // Get an array of IDs for the User's favorite movies
+                var favorites = await GetUserFavoritesAsync(tx, userId);
+                
                 var cursor = await tx.RunAsync(@$"
                     MATCH (m:Movie)
                     WHERE m.{sort} IS NOT NULL       
