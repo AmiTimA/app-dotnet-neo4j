@@ -34,10 +34,31 @@ namespace Neoflix.Services
         /// The task result contains a list of records.
         /// </returns>
         // tag::all[]
-        public async Task<Dictionary<string, object>[]> AllAsync(string? query, string sort = "name", Ordering order = Ordering.Asc, int limit = 6, int skip = 0)
+        public async Task<Dictionary<string, object>[]> AllAsync(string query, string sort = "name", Ordering order = Ordering.Asc, int limit = 6, int skip = 0)
         {
-            // TODO: Get a list of people from the database
-            return await Task.FromResult(Fixtures.People.Skip(skip).Take(limit).ToArray());
+            await using var session = _driver.AsyncSession();
+
+            return await session.ExecuteReadAsync(async tx =>
+            {
+                var personFilter = query != null
+                    ? "WHERE p.name CONTAINS $query"
+                    : string.Empty;
+
+                var cypher = $@"
+                    MATCH (p:Person)
+                    {personFilter}
+                    RETURN p {{ .* }} AS person
+                    ORDER BY p.`{sort}` {order.ToString("G").ToUpper()}
+                    SKIP $skip
+                    LIMIT $limit";
+
+                var cursor = await tx.RunAsync(cypher, new { query, skip, limit });
+                var records = await cursor.ToListAsync();
+
+                return records
+                    .Select(x => x["person"].As<Dictionary<string, object>>())
+                    .ToArray();
+            });
         }
         // end::all[]
 
@@ -53,8 +74,27 @@ namespace Neoflix.Services
         // tag::findById[]
         public async Task<Dictionary<string, object>> FindByIdAsync(string id)
         {
-            // TODO: Find a user by their ID
-            return await Task.FromResult(Fixtures.Pacino);
+            await using var session = _driver.AsyncSession();
+
+            return await session.ExecuteReadAsync(async tx =>
+            {
+                var query = @"
+                    MATCH (p:Person {tmdbId: $id})
+                    RETURN p {
+                        .*,
+                        actedCount: Count{(p)-[:ACTED_IN]->()},
+                        directedCount: Count{(p)-[:DIRECTED]->()}
+                    } AS person";
+
+                var cursor = await tx.RunAsync(query, new {id});
+
+                if (!await cursor.FetchAsync())
+                {
+                    throw new NotFoundException($"No person could be found with tmdbId: {id}");
+                }
+
+                return cursor.Current["person"].As<Dictionary<string, object>>();
+            });
         }
         // end::findById[]
 
@@ -71,8 +111,29 @@ namespace Neoflix.Services
         // tag::getSimilarPeople[]
         public async Task<Dictionary<string, object>[]> GetSimilarPeopleAsync(string id, int limit = 6, int skip = 0)
         {
-            // TODO: Get a list of similar people to the person by their id
-            return await Task.FromResult(Fixtures.People.Skip(skip).Take(limit).ToArray());
+            await using var session = _driver.AsyncSession();
+
+            return await session.ExecuteReadAsync(async tx =>
+            {
+                var query = @"                
+                    MATCH (:Person {tmdbId: $id})-[:ACTED_IN|DIRECTED]->(m)<-[r:ACTED_IN|DIRECTED]-(p)
+                    WITH p, collect(m {.tmdbId, .title, type: type(r)}) AS inCommon
+                    RETURN p {
+                        .*,
+                        actedCount: Count{(p)-[:ACTED_IN]->()},
+                        directedCount: Count{(p)-[:DIRECTED]->()},
+                        inCommon: inCommon
+                    } AS person
+                    ORDER BY size(person.inCommon) DESC
+                    SKIP $skip
+                    LIMIT $limit";
+
+                var cursor = await tx.RunAsync(query, new { id, skip, limit });
+                var records = await cursor.ToListAsync();
+                return records
+                    .Select(x => x["person"].As<Dictionary<string, object>>())
+                    .ToArray();
+            });
         }
         // end::getSimilarPeople[]
     }

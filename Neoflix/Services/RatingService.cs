@@ -3,6 +3,7 @@ using System.Threading.Tasks;
 using Neo4j.Driver;
 using Neoflix.Example;
 using Neoflix.Exceptions;
+using System.Linq;
 
 namespace Neoflix.Services
 {
@@ -35,10 +36,31 @@ namespace Neoflix.Services
         /// </returns>
         // tag::forMovie[]
         public async Task<Dictionary<string, object>[]> GetForMovieAsync(string id, string sort = "timestamp",
-            Ordering order = Ordering.Asc, int limit = 6, int skip = 0)
+    Ordering order = Ordering.Asc, int limit = 6, int skip = 0)
         {
-            // TODO: Get ratings for a Movie
-            return await Task.FromResult(Fixtures.Ratings);
+            await using var session = _driver.AsyncSession();
+
+            return await session.ExecuteReadAsync(async tx =>
+            {
+                var query = $@"
+                    MATCH (u:User)-[r:RATED]->(m:Movie {{tmdbId: $id}})
+                    RETURN r {{
+                        .rating,
+                        .timestamp,
+                        user: u {{
+                            .userId, .name
+                        }}
+                    }} AS review
+                    ORDER BY r.{sort} {order.ToString("G").ToUpper()}
+                    SKIP $skip
+                    LIMIT $limit";
+                var cursor = await tx.RunAsync(query, new { id, skip, limit });
+                var records = await cursor.ToListAsync();
+
+                return records
+                    .Select(x => x["review"].As<Dictionary<string, object>>())
+                    .ToArray();
+            });
         }
         // end::forMovie[]
 
